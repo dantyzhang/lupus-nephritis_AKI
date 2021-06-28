@@ -1,0 +1,708 @@
+---
+title: "github_LUPUS AKI_RESPONSE model_without the deceased patients"
+author: "Danty_Zhang"
+date: "2021/06/28"
+output:
+  html_document: 
+    fig_width: 6
+    highlight: tango
+    keep_md: yes
+    theme: lumen
+  pdf_document: default
+  word_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r 01_install packages& citation}
+rm(list = ls())
+#packages<-c("tableone","naniar","mice","glmnet","OptimalCutpoints","stargazer","pROC","regplot","rms","ResourceSelection","nricens","foreign")
+#for(i in packages){install.packages(i,update = F,ask = F)}
+#source("dca.R")
+library("tableone")#baseline table
+library("naniar")#viss missing values
+library("mice")#imputation
+library("glmnet")#lasso
+library("OptimalCutpoints")#cutoff
+library("stargazer")#model details
+library("pROC")#ROC
+library("regplot")#nomogram
+library("rms")##calibration curve
+library("ResourceSelection")#Hosmer-Lemeshow test
+library("nricens")#DCA
+library("foreign")#DCA
+source("dca.R")#DCA
+library("png")
+```
+
+
+```{r 02_raw data_trian1_test1}
+rm(list = ls())
+
+# data1<-read.csv("SLEAKI20210103_fionafinal.csv",sep=",",header=TRUE)
+# vis_miss(data1)
+
+data<-read.csv("SLEAKI20210427.csv",sep=",",header=TRUE)
+
+names(data)
+dput(names(data))
+
+vars <- c(
+  "gender","IS", "Center","response", "DIE", "esrd","HTN",#factor#epi_clinic
+  "age", "sleduration","elevatedcrtotreat","SLEDAI","Pred","recovertime",#numeric#epi_clinic
+  "ALB", "CR", "UP24H", "BNP", "ESR", "CRP", "IGG", "C3", "C4", "HB", "PLT","DD","RBC",#numeric#lab
+  "SSA", "RIBP", "nRNP", "Sm","dsDNAbi", "acl",#factor#auto-anti "Au", SSB elevatetopluse
+  "organ" ,"crrt", "pe" , #new factor "duration_2mg" , "historyofln" ,
+  "cellularcrescent", "fibrouscrescent", "glomerularsclerosis", "TIatrophy", "AI", "CI" ,#numeric#histo
+ "biopsy", "typeofln2","typeofln3" ,   "typeofln4" , "TMA","TIsclerosis", "tiinflammation","leukocyte_infiltration", #histo
+  "karyorrhexis" ,"wire_loop" , "fibrinoid" #factor#histo:225=NA 225ori=TMA 
+  )
+ 
+setdiff(vars,names(data))
+
+factorvars<-c("Center","gender","IS", "response",  "DIE", "esrd" ,"HTN",#epi_clinic
+  "SSA", "RIBP", "nRNP", "Sm", "dsDNAbi", "acl", #auto-anti "Au",
+   "crrt", "pe" , #new factor
+   "biopsy" ,"typeofln2","typeofln3" , "typeofln4" , "TMA","TIsclerosis", "tiinflammation","leukocyte_infiltration", #histo
+  "karyorrhexis" ,"wire_loop" , "fibrinoid" #histo
+ )
+
+setdiff(factorvars,names(data))
+
+data[factorvars]<-lapply(data[factorvars],factor)
+numvars<-setdiff(vars,factorvars)
+data[numvars]<-lapply(data[numvars],as.numeric)
+
+train1<-data[data$Center==1,];test1<-data[data$Center==2,]
+#center1 n=130 center2 n=96
+train1<-train1[,vars];test1<-test1[,vars]
+library(naniar)
+vis_miss(data);vis_miss(train1);vis_miss(test1)##typeofln NA more than histo
+```
+
+
+```{r 03_test of normality--shapiro-wilk_oridat}
+
+library(magrittr)
+
+shapiro.test.multi <- function(   #定义函数名
+  data,   #定义函数第一个参数
+  value,  #第2参数
+  group)  #第3参数
+  {       #开始计算
+  
+  require(magrittr)   #按需要加载管道函数包
+  
+  table(data[,group]) %>%   #提取分组信息，此处即为统计group中值出现的次数，达到了去重的目的
+    data.frame(.) -> a1   #将提取信息从table格式转为数据库data.frame并存为a1，这样才能提取其中一列转为向量
+  
+  a2 <- as.vector(a1[,1])  #将a1数据的第一列转为向量，这一列即为不重复的分组信息
+    
+  data = data.frame(group = data[,group],  #对数据集进行关键变量的提取，提取分组变量为data数据集的group变量
+                    value = data[,value])  #提取计算值为data数据集的value
+  
+  test.result <- data.frame(No=0,        #行号
+                            Group_Name=0,      #分组名
+                            W=0,         #W值
+                            p.value=0,   #p值
+                            norm.test=0, #检测结果
+                            var=0) #变量名
+
+  for (i in (1:length(a2))){     #定义for循环计算，从1到a2的长度值这样一个区间，a2的长度即为分组的数量
+    subset(data,                 #指定取数据集    换行写代码使层次更清晰
+           group == a2[i],       #定义去子集的条件，“==”为判断
+           select = value) %>%   #定义需要取集的变量/列，“=”为定义
+      .[,1] %>%                  #  "."定义计算结果放置的位置
+      shapiro.test(.) -> t.r     #进行正态检验分布并存储为t.r
+    
+    test.result[i,1] = i              #存储组序号
+    test.result[i,2] = a2[i]          #存储分组名
+    test.result[i,3] = t.r$statistic  #存储W统计量
+    test.result[i,4] = t.r$p.value    #存储计算的p值
+    test.result[i,6] = value
+    
+    if      #if判断
+    (t.r$p.value > 0.05)           #判断条件
+      test.result[i,5] = "Norm"    #通过判断后的命令
+      else 
+        test.result[i,5] = "Other_situation"  #未通过判断执行的命令
+    } #结束循环计算
+  
+  test.result  #显示用于存储计算结果的数据框
+}              #脚本结束
+
+# reference:http://www.360doc.com/content/18/0408/11/42030643_743743490.shtml
+
+##center
+dput(numvars)
+test.result<-data.frame()
+numvars<-c("age", "sleduration", "elevatedcrtotreat", "SLEDAI", "Pred", 
+"recovertime", "ALB", "CR", "UP24H", "BNP", "ESR", "CRP", "IGG", 
+"C3", "C4", "HB", "PLT", "DD", "RBC", "organ", #"historyofln" , #"duration_2mg", 
+"cellularcrescent", "fibrouscrescent", "glomerularsclerosis", 
+"TIatrophy", "AI", "CI")
+
+for(i in numvars){test.result<-rbind(test.result,shapiro.test.multi(data,value = i,group = "Center"))}
+nonnormaltest<-test.result[test.result$norm.test=="Other_situation",]
+nonnormal_ALL_center<-unique(nonnormaltest$var)
+
+##center1_response
+dput(names(train1))
+test.result<-data.frame()
+numvars<-c("age", "sleduration", "elevatedcrtotreat", "SLEDAI", "Pred", 
+"recovertime", "ALB", "CR", "UP24H", "BNP", "ESR", "CRP", "IGG", 
+"C3", "C4", "HB", "PLT", "DD", "RBC", "organ",# "duration_2mg", 
+"cellularcrescent", "fibrouscrescent", "glomerularsclerosis", 
+"TIatrophy", "AI", "CI")
+for(i in numvars){test.result<-rbind(test.result,shapiro.test.multi(train1,value = i,group = "response"))}
+nonnormaltest<-test.result[test.result$norm.test=="Other_situation",]
+nonnormal_C1_res<-unique(nonnormaltest$var)
+
+##center2_response
+dput(names(test1))
+test.result<-data.frame()
+numvars<-c("age", "sleduration", "elevatedcrtotreat", "SLEDAI", "Pred", "ALB", "CR", "UP24H", "BNP", "ESR", "CRP", "IGG", 
+"C3", "C4", "HB", "PLT", "DD", "RBC", "organ", #"duration_2mg", 
+"cellularcrescent", "fibrouscrescent", "glomerularsclerosis", 
+"TIatrophy", "AI", "CI")
+for(i in numvars){test.result<-rbind(test.result,shapiro.test.multi(test1,value = i,group = "response"))}
+nonnormaltest<-test.result[test.result$norm.test=="Other_situation",]
+nonnormal_C2_res<-c("recovertime",unique(nonnormaltest$var))
+```
+
+
+```{r 04_table1-nonnormaltest, eval=FALSE, include=FALSE}
+#---------------------1.table1_center---------------------
+library("tableone")
+a<-data
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'Center', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE,nonnormal =nonnormal_ALL_center)##exact=c("esrd","die","acl")#nonnormal = c( )
+table1 <- print(table, smd = TRUE)
+detach(a)
+write.csv(table1, file = "all_center.csv")
+#---------------------2.center1_response---------------------
+a<-train1
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'response', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE,nonnormal =nonnormal_C1_res)##exact=c("esrd","die","acl")#nonnormal = c( )
+table2 <- print(table, smd = TRUE)
+write.csv(table2, file = "center1_response.csv")
+detach(a)
+#---------------------3.center2_response----------------------
+a<-test1
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'response', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE,nonnormal =nonnormal_C2_res)##exact=c("esrd","die","acl")#nonnormal = c( )
+table3 <- print(table, smd = TRUE)
+write.csv(table3, file = "center2_response.csv")
+detach(a)
+```
+
+
+```{r 05_table1-mean-sd, eval=FALSE, include=FALSE}
+#---------------------1.table1_center---------------------
+library("tableone")
+a<-data
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'Center', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE,exact=c("typeofln2"))##exact=c("esrd","die","acl")#nonnormal = c( )
+table1 <- print(table, smd = TRUE)
+detach(a)
+write.csv(table1, file = "all_center_meansd.csv")
+#---------------------2.center1_response---------------------
+a<-train1
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'response', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE)##exact=c("esrd","die","acl")#nonnormal = c( )
+table2 <- print(table, smd = TRUE)
+write.csv(table2, file = "center1_response_meansd.csv")
+detach(a)
+#---------------------3.center2_response----------------------
+a<-test1
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'response', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE,exact=c("typeofln"))##exact=c("esrd","die","acl")#nonnormal = c( )
+table3 <- print(table, smd = TRUE)
+write.csv(table3, file = "center2_response_meansd.csv")
+detach(a)
+```
+
+
+```{r 06_imputaion}
+#-----1.variables needed to build model----------------------
+
+vars_need<-c("response",# "recovertime",
+  "gender", "IS", "HTN", #"historyofln01", "noresponse", "DIE","esrd",                    #factor#epi_clinic 
+  "age", "sleduration", "elevatedcrtotreat","Pred", #"symptom",                           #numeric#epi_clinic
+  #"SLEDAI","elevatetopluse","historyofln",
+  "ALB", "CR", "UP24H","BNP","ESR", "CRP", "IGG", "C3", "C4", "HB", "PLT","DD","RBC",  #numeric#lab 
+  "SSA", "RIBP", "nRNP", "Sm", "dsDNAbi", "acl",#"SSB",    "Au",                             #factor#auto-anti 
+  "organ","crrt", "pe" , #new factor  ,"duration_2mg" 
+  "cellularcrescent", "fibrouscrescent", "glomerularsclerosis", "TIatrophy", #"AI", "CI"            #numeric#histo 
+   "TMA","TIsclerosis", "tiinflammation","leukocyte_infiltration", # "typeofln",          
+  "karyorrhexis" ,"wire_loop" , "fibrinoid"   #factor#histo:225=NA 225ori=TMA
+             )
+# 
+# [1] "Center"      "DIE"         "esrd"        "SLEDAI"      "recovertime" "AI"          "CI"  
+# [8] "typeofln"    "typeofln4"  
+
+
+#-----2.imputation of variables (without histological variables)--------------------
+trainneed<-train1[,vars_need];vis_miss(trainneed);str(trainneed)  ##n=130  v=43
+names(trainneed)
+trainnobiopsy<-trainneed[,1:30];vis_miss(trainnobiopsy)##32
+trainbiopsy<-trainneed[,33:41];vis_miss(trainbiopsy)#11 
+
+f="train_mice.Rdata"
+if(file.exists(f)==F){
+library(mice)
+miceMod <- mice(trainnobiopsy[, !names(trainnobiopsy) %in% "medv"], method="rf")  #based on randomforest
+trainnobiopsy_out <- complete(miceMod);anyNA(trainnobiopsy_out)
+trainpre<-cbind(trainnobiopsy_out,trainbiopsy);vis_miss(trainpre);str(trainpre)
+save(trainpre, file = "train_mice.Rdata")
+write.csv(trainpre, file = "train_mice.csv")
+}
+
+
+#---------3.imputation of variables (without histological variables)------
+testneed<-test1[,vars_need];vis_miss(testneed);str(testneed)  ##n=96  v=43
+
+testnobiopsy<-testneed[,1:30];vis_miss(testnobiopsy)##29 ##missing values in BNP were 80%
+BNP<-testnobiopsy$BNP
+testbiopsy<-testneed[,31:41];vis_miss(testbiopsy)##
+
+f="test_mice.Rdata"
+if(file.exists(f)==F){miceMod <- mice(testnobiopsy[, !names(testnobiopsy) %in% "medv"], method="rf")  #based on randomforest
+testnobiopsy_out <- complete(miceMod) 
+anyNA(testnobiopsy_out)
+testpre<-cbind(testnobiopsy_out,testbiopsy);vis_miss(testpre);str(testpre) ##n=132 v=30
+testpre$BNP<-BNP
+save(testpre, file = "test_mice.Rdata")
+write.csv(testpre, file = "test_mice.csv")
+}
+```
+
+```{r 07_datpre_table1_impudat, eval=FALSE, include=FALSE}
+load("train_mice.Rdata");vis_miss(trainpre)
+load("test_mice.Rdata");vis_miss(testpre)
+name1<-names(trainpre);name2<-names(testpre);name1==name2
+trainpre$Center<-"1";testpre$Center<-"2"
+allpre<-rbind(trainpre,testpre)
+```
+
+```{r 08_table1_impudat, eval=FALSE, include=FALSE}
+#---------------------1.table1_center---------------------
+library("tableone")
+a<-allpre
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'Center', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE,nonnormal =nonnormal_ALL_center)##exact=c("esrd","die","acl")
+table1 <- print(table, smd = TRUE)
+detach(a)
+write.csv(table1, file = "all_center_impu.csv")
+#---------------------2.center1_response---------------------
+a<-trainpre
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'response', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE,nonnormal =nonnormal_C1_res)##exact=c("esrd","die","acl")
+table2 <- print(table, smd = TRUE)
+write.csv(table2, file = "center1_response_impu.csv")
+detach(a)
+#---------------------3.center2_response----------------------
+a<-testpre
+attach(a)
+table <- CreateTableOne(vars = vars, strata = 'response', factorVars = factorvars,data = a)
+table <- print(table, missing = TRUE,smd = TRUE,showAllLevels = TRUE,nonnormal =nonnormal_C2_res)##exact=c("esrd","die","acl")
+table3 <- print(table, smd = TRUE)
+write.csv(table3, file = "center2_response_impu.csv")
+detach(a)
+```
+
+
+```{r 09_data pre for lasso_delete the deceased patients}
+rm(list = ls())
+load("train_mice.Rdata");vis_miss(trainpre)
+load("test_mice.Rdata");vis_miss(testpre)
+oridata<-read.csv("SLEAKI20210427.csv",sep=",",header=TRUE)
+triandie<-oridata[oridata$Center==1,]$DIE
+testdie<-oridata[oridata$Center==2,]$DIE
+
+trainpre$die<-triandie
+trainpre<-trainpre[!trainpre$die==1,] ##130--111
+testpre$die<-testdie
+testpre<-testpre[!testpre$die==1,] ##96--93 
+
+summary(trainpre)
+trainbio<-na.omit(trainpre);vis_miss(trainbio) #n=82--76
+
+trainbio<-trainbio[,c(1:9,11:43)] #with lnhis
+names(trainpre)
+trainnobio<-trainpre[,c(1:9,11:32)];vis_miss(trainnobio) #n=111  #no lnhis
+
+names(testpre);vis_miss(testpre)
+testbio<-na.omit(testpre[,-c(14,40:43)]);vis_miss(testbio) ## n=71
+testnobio<-testpre[,c(1:13,15:32)];vis_miss(testnobio) ##n=93
+```
+
+
+```{r 10_train_lasso_ori_11histo}
+#--------------train--AKI model with 11 histological variables-----------------
+train<-trainbio;vis_miss(train);str(train)  #with biopsy  # n=82--76 v=41
+for(i in names(train)[c(1:42)]) {train[,i] <- as.numeric(train[,i])}    #numeric
+library("glmnet")
+set.seed(123) 
+
+x <- as.matrix(train[,2:42])
+y <- train[, c("response")]
+fitCV <- cv.glmnet(x, y, family = "binomial",type.measure = "class",nfolds = 20)#standardize=TRUE
+print(fitCV);plot(fitCV)
+fit <- glmnet(x, y, family = "binomial", alpha = 1) # make sure alpha = 1
+plot(fit, xvar="lambda",label = TRUE);print(fit)
+
+lambda= 0.10197    #min+1se
+abline(v = log(lambda), lty = 3,lwd = 2,col = "black")# get the coef
+#model
+coef.min = coef(fitCV, s = lambda  ) 
+coef.min
+
+lambda=0.08466  #min
+abline(v = log(lambda), lty = 3,lwd = 2,col = "black")# get the coef
+#model
+coef.min = coef(fitCV, s = lambda) 
+coef.min
+```
+
+
+
+```{r 11_train_lasso_ori_without_8histo}
+#-------------test--AKI model without histological variables---------------
+train<-trainnobio  # n=111 v=30
+for(i in names(train)[c(1:31)]) {train[,i] <- as.numeric(train[,i])}
+
+set.seed(123)
+x <- as.matrix(train[, 2:31])
+y <- train[, c("response")]
+fitCV <- cv.glmnet(x, y, family = "binomial",type.measure = "class",nfolds = 20)#,standardize=TRUE
+print(fitCV)
+plot(fitCV)
+
+fit <- glmnet(x, y, family = "binomial", alpha = 1) # make sure alpha = 1
+plot(fit, xvar="lambda",label = TRUE)
+print(fit)
+
+lambda=0.00778 # var=16
+abline(v = log(lambda), lty = 3,lwd = 2,col = "black")# get the coef
+##model1
+coef.min = coef(fitCV, s =  lambda) 
+coef.min
+
+
+lambda=0.1155 #1se var=5
+abline(v = log(lambda), lty = 3,lwd = 2,col = "black")# get the coef
+##model1
+coef.min = coef(fitCV, s =  lambda) 
+coef.min
+```
+
+
+```{r 12_data pre for cutoff}
+rm(list = ls())
+rm(list = ls())
+load("train_mice.Rdata");vis_miss(trainpre)
+load("test_mice.Rdata");vis_miss(testpre)
+oridata<-read.csv("SLEAKI20210427.csv",sep=",",header=TRUE)
+triandie<-oridata[oridata$Center==1,]$DIE
+testdie<-oridata[oridata$Center==2,]$DIE
+
+trainpre$die<-triandie
+trainpre<-trainpre[!trainpre$die==1,] ##130--111
+testpre$die<-testdie
+testpre<-testpre[!testpre$die==1,] ##96--93 
+
+traincut<-trainpre
+testcut<-testpre
+```
+
+```{r 13_train creat new cutoff by OptimalCutpoints}
+#add col
+newcutoffcol=function(f){
+library("OptimalCutpoints")
+datacut<-traincut[,c("response",f)]
+optimal.Youden <- optimal.cutpoints(X =f,status ="response",tag.healthy =1,
+                                    methods ="Youden",data = datacut,
+                                    ci.fit = TRUE, conf.level = 0.95)
+cutoff<-optimal.Youden[["Youden"]][["Global"]][["optimal.cutoff"]]$cutoff
+cat(cutoff)
+plot(optimal.Youden, which = 1,col = "red", ylim = c(0,1)) #plot1
+plot(optimal.Youden, which = 3,col = "red", ylim = c(0,1)) #plot2
+colname<-paste(f,cutoff, sep = "_")
+newcol<-as.data.frame(ifelse(traincut[,f] >= cutoff , "1", "0"))
+colnames(newcol)<-colname
+traincut<-cbind(traincut,newcol)
+                        }
+
+for(i in c("sleduration","elevatedcrtotreat","CR","C4","TIatrophy")){traincut<-newcutoffcol(i)}
+#generate new col according to cutoff value
+
+for(i in c("sleduration_0.5","elevatedcrtotreat_12","CR_199","C4_0.08","TIatrophy_10")) {traincut[,i] <- as.factor(traincut[,i])}
+
+save(traincut,file="traincut_delete_diseased.Rdata")
+
+fit.full <- glm(response ~ sleduration_0.5,
+                data=traincut,family=binomial(link="logit"))
+summary(fit.full)#0.000106 ***
+```
+
+
+```{r 14_test creat new cutoff by OptimalCutpoints}
+testcutoffcol=function(f,cutoff){
+library("OptimalCutpoints")
+colname<-paste(f,cutoff, sep = "_")
+newcol<-as.data.frame(ifelse(testcut[,f] >= cutoff , "1", "0"))
+colnames(newcol)<-colname
+testcut<-cbind(testcut,newcol)
+                                 }
+
+testcut<-testcutoffcol("sleduration",0.5)
+testcut<-testcutoffcol("elevatedcrtotreat",12)
+testcut<-testcutoffcol("CR",199)
+testcut<-testcutoffcol("C4",0.08)
+testcut<-testcutoffcol("TIatrophy",10)
+
+for(i in c("sleduration_0.5","elevatedcrtotreat_12","CR_199","C4_0.08","TIatrophy_10")) {testcut[,i] <- as.factor(testcut[,i])}
+vis_miss(testcut)
+save(testcut,file="testcut_delete_diseased.Rdata")
+```
+
+```{r 15_cutdata pre for logi}
+rm(list = ls())
+load("traincut_delete_diseased.Rdata")
+load("testcut_delete_diseased.Rdata")
+var<-c("response","sleduration","elevatedcrtotreat","CR","C4","TIatrophy","sleduration_0.5","elevatedcrtotreat_12","CR_199","C4_0.08","TIatrophy_10","TIsclerosis","crrt")
+var<-c("response","sleduration_0.5","elevatedcrtotreat_12","CR_199","C4_0.08","TIatrophy_10","TIsclerosis","crrt")
+train<-traincut[,var];vis_miss(train)
+test<-testcut[,var];vis_miss(test)
+trainbio<-na.omit(train)
+testbio<-na.omit(test)
+trainnobio<-train[,-c(6,7)]
+testnobio<-test[,-c(6,7)]
+trainnobio<-train[,-c(6,11,12)]
+testnobio<-test[,-c(6,11,12)]
+```
+
+Model2----6 vars:
+##############sleduration_0.5+elevatedcrtotreat_12+CR_199+C4_0.08+TIatrophy_10+TIsclerosis 
+```{r 16_trainbio_fit_build_AKIbio_model_lasso-logi_ROC_nomo}
+as_train<-trainbio
+library(glmnet)
+
+fit.full.step<-glm(response ~
+                   sleduration+elevatedcrtotreat+CR+C4+TIatrophy+TIsclerosis,
+                   data=as_train,family = binomial(link="logit"))
+summary(fit.full.step)
+
+fit.full.step<-glm(response ~
+                   sleduration_0.5+elevatedcrtotreat+CR+TIsclerosis,
+                   data=as_train,family = binomial(link="logit"))
+summary(fit.full.step)
+
+fit.full.step<-glm(response ~
+                   sleduration+elevatedcrtotreat+CR+C4+TIatrophy+TIsclerosis,
+                   data=as_train,family = binomial(link="logit"))
+summary(fit.full.step)
+
+fit.full.step<-glm(response ~
+                   sleduration_0.5+elevatedcrtotreat_12+CR_199+C4_0.08+TIatrophy_10+TIsclerosis,
+                   data=as_train,family = binomial(link="logit"))
+summary(fit.full.step)
+
+
+#exclude TIatrophy_10 and C40.08
+fit.full.step<-glm(response ~
+                   sleduration_0.5+elevatedcrtotreat_12+CR_199+TIsclerosis, #4vars
+                   data=as_train,family = binomial(link="logit"))  #0.1
+
+```
+
+
+```{r 17_trainbio_build_AKIbio_model_lasso-logi_ROC_nomo}
+#model
+summary(fit.full.step)
+library("stargazer")
+stargazer(fit.full.step,title="Logistic Regression Model",type="text")
+cbind(coef= coef(fit.full.step),confint(fit.full.step))
+exp(cbind(OR= coef(fit.full.step),confint(fit.full.step)))
+
+#residuals
+plot(residuals(fit.full.step))
+plot(predict(fit.full.step,type="response"),residuals(fit.full.step,type="response"))
+
+#ROC
+prob <- fit.full.step$fitted.values;as_train$prob<-prob
+pgroup <- ifelse(prob > 0.5, "1", "0");as_train$pgroup <- pgroup
+t <- table(as_train$response,as_train$pgroup)
+rownames(t) <- c("Obs. neg","Obs. pos")
+colnames(t) <- c("Pred. neg","Pred. pos")
+prop.table(t)*100
+efficiency <- sum(diag(t))/sum(t)  #efficiency=0.8536585
+library("pROC")
+pre <- roc(response~prob, data = as_train,smooth=F)
+plot(pre, print.auc=TRUE, print.thres=TRUE,main = "ROC CURVE trainbio",col="#0072B5FF",print.thres.col="#BC3C29FF",identity.col="#0072B5FF",identity.lty=1,identity.lwd=1)
+
+ci.auc(pre) 
+# 0.934
+# 95% CI: 0.8836-0.9836 (DeLong)
+
+
+#predict the response-probability of the first observation
+obs <- as_train[1,]
+predict(newdata=obs,fit.full.step,"response") #0.4493
+
+#nomogram--take the first observation as an example
+library("regplot")
+regplot(fit.full.step,observation = obs,droplines=T,prfail = T,clickable = TRUE)
+
+#calibration curve
+library("rms")   
+dd<-datadist(as_train)
+options(datadist='dd')
+fit1<-lrm(response ~sleduration_0.5+elevatedcrtotreat_12+CR_199+TIsclerosis,data=as_train,x=T,y=T);fit1
+# fit1<-lrm(response ~sleduration+elevatedcrtotreat+CR+TIsclerosis,data=as_train,x=T,y=T);fit1
+cal1 <- calibrate(fit1, cmethod='hare', method='boot', B=1000)
+plot(cal1,xlab = "Nomogram Predicted Survival", ylab = "response",main = "Calibration Curve")
+
+#Hosmer-Lemeshow test p= 0.9867
+library(ResourceSelection)
+ht<-hoslem.test(fit.full.step$y, fitted(fit.full.step), g=10)##group=8
+ht
+cbind(ht$observed,ht$expected)
+```
+
+
+```{r 18_testbio_validate_AKIbio_model}
+as_test<-testbio
+
+#ROC
+predictpro<- predict.glm(fit.full.step,type='response',newdata=as_test)
+predict =ifelse(predictpro>0.5,1,0)
+as_test$prob = predictpro
+as_test$predict = predict
+
+g <- roc(response~prob, data = as_test,smooth=F)
+plot(g, print.auc=TRUE, print.thres=TRUE,main = "ROC CURVE",col="#0072B5FF",print.thres.col="#BC3C29FF",identity.col="#0072B5FF",identity.lty=1,identity.lwd=1)
+ci.auc(g)
+# 0.811
+# 95% CI: 0.704-0.9189 (DeLong)
+
+#calibration curve
+fit2 <- lrm(as_test$response ~ as_test$prob,x = TRUE,y = TRUE);fit2
+cal2 <- calibrate(fit2,  method = "boot", B = 1000)
+plot(cal2, xlab = "Nomogram Predicted Survival", ylab = "response",main = "Calibration Curve")
+
+#Hosmer-Lemeshow goodness of fit (GOF) test# p-value = 3.005e-07
+a<-ifelse(as_test$response==0,0,1)
+ht <- hoslem.test(a,predictpro, g=8);ht
+cbind(ht$observed,ht$expected)
+```
+
+Model1----5 vars:
+##############sleduration_0.5+elevatedcrtotreat_12+CR_199+C4_0.08+crrt
+
+```{r 19_trainnobio_build_AKI_model_lasso-logi_ROC_nomo}
+as_train<-trainnobio
+fit.full.step<-glm(response ~
+sleduration_0.5+elevatedcrtotreat_12+CR_199+C4_0.08+crrt,
+                   data=as_train,family = binomial(link="logit"))
+summary(fit.full.step)
+
+#exclude:C4 crrt
+fit.full.step<-glm(response ~
+                   sleduration_0.5+elevatedcrtotreat_12+CR_199, #4var
+                   data=as_train,family = binomial(link="logit"))
+
+#model
+summary(fit.full.step)
+stargazer(fit.full.step,title="Logistic Regression Model",type="text")
+cbind(coef= coef(fit.full.step),confint(fit.full.step))
+exp(cbind(OR= coef(fit.full.step),confint(fit.full.step)))
+
+#residuals
+plot(residuals(fit.full.step))
+plot(predict(fit.full.step,type="response"),residuals(fit.full.step,type="response"))
+
+#ROC
+prob <- fit.full.step$fitted.values;as_train$prob<-prob
+pgroup <- ifelse(prob > 0.5, "1", "0");as_train$pgroup <- pgroup
+t <- table(as_train$response,as_train$pgroup)
+rownames(t) <- c("Obs. neg","Obs. pos")
+colnames(t) <- c("Pred. neg","Pred. pos")
+prop.table(t)*100
+efficiency <- sum(diag(t))/sum(t)  #efficiency=0.7769231
+pre <- roc(response~prob, data = as_train,smooth=F)
+plot(pre, print.auc=TRUE, print.thres=TRUE,main = "ROC CURVE trainbio",
+     col="#0072B5FF",print.thres.col="#BC3C29FF",identity.col="#0072B5FF",identity.lty=1,identity.lwd=1)
+ci.auc(pre) 
+# 0.847 
+# 95% CI: 0.7814-0.9118 (DeLong)
+
+#predict the response-probability of the first observation
+obs <- as_train[1,]
+predict(newdata=obs,fit.full.step,"response") #0.6865904 
+
+#nomogram--take the first observation as an example
+regplot(fit.full.step,observation = obs,droplines=T,prfail = T,clickable = TRUE,other=(list(bvcol="orange",sq="purple",obscol="dodgerblue")))
+
+#calibration curve
+dd<-datadist(as_train)
+options(datadist='dd')
+fit1<-lrm(response ~sleduration_0.5+elevatedcrtotreat_12+CR_199,data=as_train,x=T,y=T);fit1
+cal1 <- calibrate(fit1, cmethod='hare', method='boot', B=1000)
+plot(cal1,xlim=c(0,1.0),ylim=c(0,1.0),xlab = "Nomogram Predicted Survival", ylab = "response",main = "Calibration Curve")
+
+#Hosmer-Lemeshow test
+ht<-hoslem.test(fit.full.step$y, fitted(fit.full.step), g=8)##
+ht
+# p-value = 0.8043
+```
+
+```{r 20_testnobio_validate_AKIbio_model}
+as_test<-testnobio
+predictpro<- predict.glm(fit.full.step,type='response',newdata=as_test)
+predict =ifelse(predictpro>0.5,1,0)
+
+as_test$prob = predictpro
+as_test$predict = predict
+
+g <- roc(response~prob, data = as_test,smooth=F)
+plot(g, print.auc=TRUE, print.thres=TRUE,main = "ROC CURVE",
+     col="#0072B5FF",print.thres.col="#BC3C29FF",identity.col="#0072B5FF",identity.lty=1,identity.lwd=1)
+ci.auc(g) 
+
+
+fit <- lrm(as_test$response ~ as_test$prob,x = TRUE,y = TRUE)
+fit
+cal <- calibrate(fit,  method = "boot", B = 1000)
+plot(cal, xlab = "Nomogram Predicted Survival", ylab = "response",main = "Calibration Curve")
+
+#Hosmer-Lemeshow test
+a<-ifelse(as_test$response==0,0,1)
+ht <- hoslem.test(a,predictpro, g=8)
+ht
+cbind(ht$observed,ht$expected)
+```
+
+```{r 24_package citation}
+knitr::write_bib(c(.packages()), file =  'packages.bib')
+a = readLines("packages.bib") 
+a[a == "}"] = "}\n"
+writeLines(a,"packages.bib")
+```
+
+
+```{r 25_color}
+library("scales")
+library("ggsci")
+show_col(pal_nejm("default")(7))  #
+pal_nejm("default",alpha = 1)(7)  #
+```
